@@ -8,6 +8,7 @@ import os
 chunk_size = 64 * 1000 #bytes
 hash_bytes_half = 32
 cipher_algos = [ AES, Blowfish, ]
+file_rounds_bytes = 8
 
 def remove_intermediate_files(directory):
 	for file in os.listdir(directory):
@@ -17,15 +18,15 @@ def remove_intermediate_files(directory):
 def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *args, **kwargs):
 	try:
 		key = get_hash_digest(raw_key, rounds=get_rounds(raw_key))
-		_file_path = file_path
-		rounds -= 1
 
 		def decrypt_process(f_path, output_file_path=None, to_mem=False, *args, **kwargs):
 			ifile_path = get_intermediate_file_path(f_path)
 			decode_chunk = kwargs.pop('decode_chunk', True)
 			data = None
+			_rounds = None
+			is_first = kwargs.get('first')
 			
-			decrypt_to_file(
+			data = decrypt_to_file(
 				cipher_algos[1],
 				key[hash_bytes_half:],
 				f_path,
@@ -34,6 +35,12 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 				*args,
 				**kwargs
 			)
+
+			kwargs.pop('first', None)
+
+			if is_first:
+				_rounds = data[0]
+				data = data[1]
 
 			if to_mem:			
 				data = decrypt_to_mem(
@@ -57,10 +64,31 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 
 			secure_delete(ifile_path)
 
+			if is_first:
+				return _rounds, data
+
 			return data
 
-
+		
+		_file_path = file_path
 		prev_ifile_path = None
+
+		ifile_path = get_intermediate_file_path(file_path)
+
+		rounds, data = decrypt_process(
+			_file_path,
+			ifile_path,
+			decode_chunk=False,
+			first=True,
+			*args,
+			**kwargs
+		)
+
+		prev_ifile_path = ifile_path
+		_file_path = ifile_path
+
+		rounds_outside_loop = 2
+		rounds -= rounds_outside_loop
 
 		while rounds:		
 			ifile_path = get_intermediate_file_path(file_path)
@@ -72,9 +100,8 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 				*args, 
 				**kwargs
 			)
-
-			if prev_ifile_path is not None:
-				secure_delete(prev_ifile_path)
+			
+			secure_delete(prev_ifile_path)
 
 			prev_ifile_path = ifile_path
 			_file_path = ifile_path
@@ -84,7 +111,6 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 		if not to_mem and output_file_path is None:
 			output_file_path = get_decrypt_file_path(file_path)
 		
-		#working
 		data = decrypt_process(
 			_file_path,
 			output_file_path=output_file_path,
@@ -105,13 +131,12 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 
 def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs):
 	try:
-		hash_rounds = get_rounds(raw_key)
-		key = get_hash_digest(raw_key, rounds=hash_rounds)
-		_file_path = file_path
-		rounds -= 1
-
+		key = get_hash_digest(raw_key, rounds=get_rounds(raw_key))
+		
 		def encrypt_process(f_path, output_file_path, *args, **kwargs):
 			ifile_path = get_intermediate_file_path(f_path)
+
+			rounds = kwargs.pop('rounds', None)
 
 			encrypt_to_file(
 				cipher_algos[0],
@@ -121,6 +146,8 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 				*args,
 				**kwargs
 			)
+
+			kwargs['rounds'] = rounds
 
 			encrypt_to_file(
 				cipher_algos[1], 
@@ -133,6 +160,11 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 
 			secure_delete(ifile_path)
 
+
+		base_rounds = rounds
+		_file_path = file_path
+		rounds_outside_loop = 1
+		rounds -= rounds_outside_loop
 		prev_ifile_path = None
 
 		while rounds:
@@ -152,8 +184,9 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 
 		encrypt_process(
 			_file_path, 
-			output_file_path, 
-			*args, 
+			output_file_path,
+			rounds=base_rounds,
+			*args,
 			**kwargs
 		)
 
@@ -164,20 +197,27 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 		raise err
 
 
-def pad(s, block_size):
-	return s + ((block_size - len(s) % block_size) * b' ')
+def pad(chunk, block_size):
+	return chunk + ((block_size - len(chunk) % block_size) * b' ')
 
 
 def pad_if_needed(chunk, block_size):
 	return pad(chunk, block_size) if len(chunk) % block_size != 0 else chunk
 
 
-def _encrypt_to_file(input_file, encrypt, file_size, IV, output_file_path, block_size):
+def _encrypt_to_file(
+	input_file, encrypt, file_size, IV, output_file_path, block_size, **kwargs
+):
 	with open(output_file_path, 'wb') as output_file:
+		rounds = kwargs.get('rounds')
+
 		output_file_write = output_file.write
 
-		output_file_write(file_size.encode('utf-8'))
+		output_file_write(file_size)
 		output_file_write(IV)
+
+		if rounds is not None:
+			output_file_write(rounds)
 
 		for chunk in file_read_generator(input_file, chunk_size):
 			output_file_write(encrypt(
@@ -189,8 +229,9 @@ def _encrypt_to_mem(input_file, encrypt, file_size, IV, block_size):
 	ciphered_data = b''
 	output_file_write = output_file.write
 
-	ciphered_data += file_size.encode('utf-8')
+	ciphered_data += file_size
 	ciphered_data += IV
+	ciphered_data += kwargs.get('rounds', b'')
 
 	for chunk in file_read_generator(input_file, chunk_size):
 		ciphered_data += encrypt(
@@ -203,18 +244,24 @@ def _encrypt_to_mem(input_file, encrypt, file_size, IV, block_size):
 def _encrypt(algo_obj, key, file_path, encrypt_func, **kwargs):
 	block_size = algo_obj.block_size
 	output_file_path = kwargs.pop('output_file_path', False) or get_encrypt_file_path(file_path)
-	file_size = get_file_size_zfill(file_path, block_size)
+	file_size = get_file_size_zfill(file_path, block_size).encode()
 	IV = get_random_bytes(block_size)
+
+	if kwargs.get('rounds') is not None:
+		kwargs['rounds'] = str(kwargs['rounds'])\
+								.zfill(block_size)\
+								.encode()	
+
 	cipher = algo_obj.new(key, algo_obj.MODE_CBC, IV)
 
 	with open(file_path, 'rb') as input_file:
 		return encrypt_func(
 			input_file,
-			cipher.encrypt, 
+			cipher.encrypt,
 			file_size, 
 			IV,
 			output_file_path, 
-			block_size, 
+			block_size,
 			**kwargs
 		)
 
@@ -255,13 +302,21 @@ def _decrypt_to_file(file, decrypt, file_size, file_path, *args, **kwargs):
 
 def _decrypt(algo_obj, key, file_path, decrypt_func, **kwargs):
 	with open(file_path, 'rb') as file:
-		block_size = algo_obj.block_size
+		block_size = algo_obj.block_size	
 		file_size = int(file.read(block_size))
 		IV = file.read(block_size)
+
+		is_first = kwargs.get('first')
+
+		if is_first:
+			rounds = int(file.read(block_size))
 
 		cipher = algo_obj.new(key, algo_obj.MODE_CBC, IV)
 		decrypt = cipher.decrypt
 
+		if is_first:
+			return rounds, decrypt_func(file, decrypt, file_size, file_path, **kwargs)
+			
 		return decrypt_func(file, decrypt, file_size, file_path, **kwargs)
 
 
