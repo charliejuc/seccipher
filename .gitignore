@@ -1,3 +1,5 @@
 *.pyc
+*.hpwu
+*.pwu
 secret.*
 sheet.py
