@@ -35,7 +35,6 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 				**kwargs
 			)
 
-
 			if to_mem:			
 				data = decrypt_to_mem(
 					cipher_algos[0], 
@@ -106,7 +105,8 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 
 def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs):
 	try:
-		key = get_hash_digest(raw_key, rounds=get_rounds(raw_key))
+		hash_rounds = get_rounds(raw_key)
+		key = get_hash_digest(raw_key, rounds=hash_rounds)
 		_file_path = file_path
 		rounds -= 1
 
@@ -150,7 +150,12 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 		if output_file_path is None:
 			output_file_path = get_encrypt_file_path(file_path)
 
-		encrypt_process(_file_path, get_encrypt_file_path(file_path), *args, **kwargs)
+		encrypt_process(
+			_file_path, 
+			output_file_path, 
+			*args, 
+			**kwargs
+		)
 
 		secure_delete(_file_path)
 
@@ -163,6 +168,10 @@ def pad(s, block_size):
 	return s + ((block_size - len(s) % block_size) * b' ')
 
 
+def pad_if_needed(chunk, block_size):
+	return pad(chunk, block_size) if len(chunk) % block_size != 0 else chunk
+
+
 def _encrypt_to_file(input_file, encrypt, file_size, IV, output_file_path, block_size):
 	with open(output_file_path, 'wb') as output_file:
 		output_file_write = output_file.write
@@ -171,10 +180,9 @@ def _encrypt_to_file(input_file, encrypt, file_size, IV, output_file_path, block
 		output_file_write(IV)
 
 		for chunk in file_read_generator(input_file, chunk_size):
-			if len(chunk) % block_size != 0:
-				chunk = pad(chunk, block_size)
-
-			output_file_write(encrypt(chunk))
+			output_file_write(encrypt(
+				pad_if_needed(chunk, block_size)
+			))
 
 
 def _encrypt_to_mem(input_file, encrypt, file_size, IV, block_size):
@@ -185,10 +193,9 @@ def _encrypt_to_mem(input_file, encrypt, file_size, IV, block_size):
 	ciphered_data += IV
 
 	for chunk in file_read_generator(input_file, chunk_size):
-		if len(chunk) % block_size != 0:
-			chunk = pad(chunk, block_size)
-
-		ciphered_data += encrypt(chunk)
+		ciphered_data += encrypt(
+			pad_if_needed(chunk, block_size)
+		)
 
 	return ciphered_data.decode()
 
