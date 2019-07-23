@@ -36,16 +36,26 @@ def int_validation(value):
 	return base_validation(value, message, is_int)
 
 
+def str_validation(value):
+	message = '"{value}" is not a valid string value.'
+
+	def is_str(value):
+		return isinstance(value, str)
+
+	return base_validation(value, message, is_str)
+
+
 validation_types = {
 	0: file_validation,
 	'file': file_validation,
 	'flag': flag_validation,
 	'int': int_validation,
+	'str': str_validation
 }
 
 params_and_type = {
 	-1: 'file',
-	'-o': 'file',
+	'-o': 'str',
 	'-c': 'flag',
 	'-d': 'flag',
 	'--debug': 'flag',
