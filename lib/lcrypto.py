@@ -3,7 +3,7 @@ from lib.lhash import get_hash_digest, get_rounds
 from lib.lrandom import get_random_bytes
 from utils.ucrypto import get_encrypt_file_path, get_decrypt_file_path, get_intermediate_file_path, intermediate_file_ext
 from utils.ufile import file_read_generator, get_file_size_zfill, secure_delete
-import os
+import os, shutil
 
 chunk_size = 64 * 1000 #bytes
 hash_bytes_half = 32
@@ -42,7 +42,7 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 				_rounds = data[0]
 				data = data[1]
 
-			if to_mem:			
+			if to_mem:
 				data = decrypt_to_mem(
 					cipher_algos[0], 
 					key[:hash_bytes_half],
@@ -51,7 +51,7 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 					**kwargs
 				)
 
-			else:			
+			else:
 				decrypt_to_file(
 					cipher_algos[0],
 					key[:hash_bytes_half],
@@ -70,6 +70,31 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 			return data
 
 		
+		def _get_output_file_path():
+			if to_mem:
+				return None
+
+			if output_file_path is None:
+				return get_decrypt_file_path(file_path)
+			
+			return output_file_path
+		
+		def final_decrypt(file_path, output_file_path):
+			output_file_path = _get_output_file_path()
+			
+			data = decrypt_process(
+				file_path,
+				output_file_path=output_file_path,
+				to_mem=to_mem,
+				decode_chunk=False,
+				*args,
+				**kwargs
+			)
+
+			secure_delete(file_path)
+
+			return data
+
 		_file_path = file_path
 		prev_ifile_path = None
 
@@ -84,11 +109,23 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 			**kwargs
 		)
 
-		prev_ifile_path = ifile_path
-		_file_path = ifile_path
-
 		rounds_outside_loop = 2
 		rounds -= rounds_outside_loop
+
+		if rounds < 0:
+			output_file_path = _get_output_file_path()
+
+			if output_file_path is not None:
+				shutil.move(ifile_path, output_file_path)
+				return
+
+			with open(ifile_path, 'r') as file:
+				data = file.read()
+				
+			return data
+		
+		prev_ifile_path = ifile_path
+		_file_path = ifile_path
 
 		while rounds:		
 			ifile_path = get_intermediate_file_path(file_path)
@@ -108,19 +145,7 @@ def decrypt(raw_key, file_path, rounds=1, output_file_path=None, to_mem=False, *
 			rounds -= 1
 
 
-		if not to_mem and output_file_path is None:
-			output_file_path = get_decrypt_file_path(file_path)
-		
-		data = decrypt_process(
-			_file_path,
-			output_file_path=output_file_path,
-			to_mem=to_mem,
-			decode_chunk=False,
-			*args,
-			**kwargs
-		)
-
-		secure_delete(_file_path)
+		data = final_decrypt(_file_path, output_file_path)		
 
 		return data
 
@@ -163,9 +188,13 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 
 		base_rounds = rounds
 		_file_path = file_path
+
 		rounds_outside_loop = 1
 		rounds -= rounds_outside_loop
+
 		prev_ifile_path = None
+
+		keep = not rounds
 
 		while rounds:
 			ifile_path = get_intermediate_file_path(file_path)
@@ -185,12 +214,13 @@ def encrypt(raw_key, file_path, rounds=1, output_file_path=None, *args, **kwargs
 		encrypt_process(
 			_file_path, 
 			output_file_path,
-			rounds=base_rounds,
+			rounds=base_rounds,			
 			*args,
 			**kwargs
 		)
 
-		secure_delete(_file_path)
+		if not keep:
+			secure_delete(_file_path)
 
 	except Exception as err:
 		remove_intermediate_files(os.path.dirname(file_path))
